@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+@media print {
+  /* Hide main app root when barcode printing is active to prevent multi-page height overflow */
+  body.printing-barcode #root {
+    display: none !important;
+  }
+
+  #printable-barcode-section {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  #printable-barcode-section * {
+    visibility: visible !important;
+  }
+
+  @page {
+    margin: 0 !important;
+    padding: 0 !important;
+    size: auto;
+  }
+}
