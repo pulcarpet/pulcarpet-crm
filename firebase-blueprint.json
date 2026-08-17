@@ -1,0 +1,41 @@
+{
+  "entities": {
+    "audit_logs": {
+      "fields": {
+        "userId": { "type": "string", "description": "User identifier who performed the action" },
+        "userName": { "type": "string", "description": "Display name of the user" },
+        "userRole": { "type": "string", "description": "System role (Genel Yönetici, etc.)" },
+        "action": { "type": "string", "description": "Action name: LOGIN_SUCCESS, LOGIN_2FA_SENT, etc." },
+        "details": { "type": "string", "description": "Descriptive text of the security/commercial event" },
+        "status": { "type": "string", "description": "SUCCESS, WARNING, FAILED" },
+        "timestamp": { "type": "string", "description": "ISO timestamp of the event" },
+        "userAgent": { "type": "string", "description": "Client browser & device details" }
+      }
+    },
+    "users": {
+      "fields": {
+        "username": { "type": "string", "description": "Username" },
+        "name": { "type": "string", "description": "Full name" },
+        "role": { "type": "string", "description": "Access role" },
+        "phone": { "type": "string", "description": "2FA authorized phone number" },
+        "twoFactorActive": { "type": "boolean", "description": "2FA status" }
+      }
+    },
+    "orders": {
+      "fields": {
+        "orderNumber": { "type": "string", "description": "Order number" },
+        "customerName": { "type": "string", "description": "Customer name" },
+        "totalAmount": { "type": "number", "description": "Total amount" },
+        "status": { "type": "string", "description": "Production status" }
+      }
+    },
+    "customers": {
+      "fields": {
+        "name": { "type": "string", "description": "Company / Lead name" },
+        "phone": { "type": "string", "description": "Phone number" },
+        "email": { "type": "string", "description": "Email address" },
+        "taxNumber": { "type": "string", "description": "VKN / Tax Number" }
+      }
+    }
+  }
+}
