@@ -19,10 +19,16 @@ import {
   Coins,
   Calendar,
   Hourglass,
-  AlertTriangle
+  AlertTriangle,
+  ScanBarcode,
+  Edit3,
+  ExternalLink,
+  Box
 } from 'lucide-react';
 import { ProformaInvoiceModal, ProformaInvoiceData } from '../ProformaInvoiceModal';
 import { OrderCostModal } from '../OrderCostModal';
+import { AdvancePaymentModal } from '../AdvancePaymentModal';
+import { EditOrderItemsModal } from '../EditOrderItemsModal';
 
 interface OrdersViewProps {
   orders: Order[];
@@ -33,6 +39,13 @@ interface OrdersViewProps {
   onUpdateOrderStatus: (orderId: string, status: ProductionStatus) => void;
   onDeleteOrder?: (orderId: string) => void;
   onSaveOrderCost?: (orderId: string, breakdown: OrderCostBreakdown) => void;
+  onSaveProforma?: (data: ProformaInvoiceData) => void;
+  onConvertToOrder?: (
+    data: ProformaInvoiceData, 
+    advancePayment?: { amount: number; currency: 'USD' | 'EUR' | 'GBP' | 'TRY'; notes: string; deliveryDate?: string }
+  ) => void;
+  onNavigateToBarcode?: (order: Order) => void;
+  onOpenProformaModal?: (initialData?: Partial<ProformaInvoiceData>) => void;
   searchTerm: string;
 }
 
@@ -52,13 +65,31 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   onUpdateOrderStatus,
   onDeleteOrder,
   onSaveOrderCost,
+  onSaveProforma,
+  onConvertToOrder,
+  onNavigateToBarcode,
+  onOpenProformaModal,
   searchTerm,
 }) => {
+  const [viewMode, setViewMode] = useState<'orders' | 'proformas'>('orders');
+  const [proformaFilter, setProformaFilter] = useState<'all' | 'pending' | 'approved'>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [activePrintOrder, setActivePrintOrder] = useState<Order | null>(null);
   const [activeProformaData, setActiveProformaData] = useState<Partial<ProformaInvoiceData> | null>(null);
   const [activeCostOrder, setActiveCostOrder] = useState<Order | null>(null);
   const [activeDetailOrder, setActiveDetailOrder] = useState<Order | null>(null);
+
+  // Modals for editing order items and advance payment
+  const [activeEditItemsOrder, setActiveEditItemsOrder] = useState<Order | null>(null);
+  const [activeAdvancePaymentOrder, setActiveAdvancePaymentOrder] = useState<Order | null>(null);
+
+  // Proforma Direct 1-Click Approval State
+  const [proformaToApprove, setProformaToApprove] = useState<ProformaInvoiceData | null>(null);
+  const [proformaAdvanceAmount, setProformaAdvanceAmount] = useState<number>(0);
+  const [proformaAdvanceNotes, setProformaAdvanceNotes] = useState<string>('Banka Havalesi / Ön Ödeme');
+  const [proformaDeliveryDate, setProformaDeliveryDate] = useState<string>(
+    new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+  );
   
   const todayStr = new Date().toISOString().split('T')[0];
   const defaultDeliveryStr = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -378,142 +409,238 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
 
   return (
     <div id="orders-view" className="space-y-6">
-      {/* View Header */}
+      {/* View Header with Mode Switcher */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white border border-slate-200 p-5 rounded-xl shadow-sm">
         <div>
           <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-            <Package className="w-5 h-5 text-indigo-600" /> Siparişler & Atölye Üretim Takibi
+            {viewMode === 'orders' ? (
+              <>
+                <Package className="w-5 h-5 text-indigo-600" /> Siparişler & Atölye Üretim Takibi
+              </>
+            ) : (
+              <>
+                <FileText className="w-5 h-5 text-amber-600" /> Proforma Teklifler & Müşteri Onayı
+              </>
+            )}
           </h2>
-          <p className="text-xs text-slate-500 mt-0.5">Sipariş & ön ödeme, üretimdeki siparişler ve teslim edilen halıların canlı takibi</p>
+          <p className="text-xs text-slate-500 mt-0.5">
+            {viewMode === 'orders'
+              ? 'Sipariş & ön ödeme, üretimdeki siparişler ve teslim edilen halıların canlı takibi'
+              : 'Proforma teklifleri oluşturun, kaydedip PDF olarak müşteriye iletin. Müşteri onayladığında tek tıkla siparişe aktarın.'}
+          </p>
         </div>
 
-        <button
-          onClick={() => setIsNewOrderModalOpen(true)}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-4 py-2 rounded-lg flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
-        >
-          <Plus className="w-4 h-4" /> Yeni Sipariş Gir
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* View Mode Toggle */}
+          <div className="bg-slate-100 p-1 rounded-xl flex items-center border border-slate-200">
+            <button
+              type="button"
+              onClick={() => setViewMode('orders')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                viewMode === 'orders'
+                  ? 'bg-white text-indigo-700 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Package className="w-3.5 h-3.5" />
+              <span>Siparişler ({orders.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('proformas')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                viewMode === 'proformas'
+                  ? 'bg-white text-amber-700 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <FileText className="w-3.5 h-3.5 text-amber-500" />
+              <span>Teklifler & Proformalar ({proformas.length})</span>
+            </button>
+          </div>
+
+          {viewMode === 'orders' ? (
+            <button
+              onClick={() => setIsNewOrderModalOpen(true)}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
+            >
+              <Plus className="w-4 h-4" /> Yeni Sipariş Gir
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                if (onOpenProformaModal) {
+                  onOpenProformaModal();
+                } else {
+                  setActiveProformaData({});
+                }
+              }}
+              className="bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
+            >
+              <Plus className="w-4 h-4" /> Yeni Teklif / Proforma Oluştur
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Production Pipeline Filter Pills */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
-        <button
-          onClick={() => setSelectedStatus('all')}
-          className={`px-3.5 py-1.5 rounded-lg border font-semibold whitespace-nowrap transition-all cursor-pointer ${
-            selectedStatus === 'all'
-              ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
-              : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-          }`}
-        >
-          Tüm Aşamalar ({orders.length})
-        </button>
-
-        {productionStages.map((st) => {
-          const count = orders.filter((o) => o.status === st.key).length;
-          return (
+      {/* Orders Tab View */}
+      {viewMode === 'orders' && (
+        <div className="space-y-4">
+          {/* Production Pipeline Filter Pills */}
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
             <button
-              key={st.key}
-              onClick={() => setSelectedStatus(st.key)}
-              className={`px-3.5 py-1.5 rounded-lg border font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
-                selectedStatus === st.key
+              onClick={() => setSelectedStatus('all')}
+              className={`px-3.5 py-1.5 rounded-lg border font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                selectedStatus === 'all'
                   ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
                   : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
               }`}
             >
-              <span>{st.label}</span>
-              <span className="text-[10px] bg-slate-100 text-slate-800 px-1.5 py-0.2 rounded font-mono font-bold">{count}</span>
+              Tüm Aşamalar ({orders.length})
             </button>
-          );
-        })}
-      </div>
 
-      {/* Orders List / Cards */}
-      <div className="space-y-4">
-        {filteredOrders.map((order) => {
-          const currentStageObj = productionStages.find((s) => s.key === order.status) || productionStages[0];
-          return (
-            <div
-              key={order.id}
-              className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm hover:border-slate-300 transition-all space-y-4"
-            >
-              {/* Order Header */}
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-slate-100 pb-3.5">
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => setActiveDetailOrder(order)}
-                    title="Sipariş detayını ve satır satır içerikleri açmak için tıklayın"
-                    className="text-sm font-extrabold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg border border-indigo-200 transition-colors font-mono cursor-pointer flex items-center gap-1.5"
-                  >
-                    <span>{order.orderNumber}</span>
-                    <span className="text-[10px] font-sans font-bold text-indigo-700 bg-white px-1.5 py-0.5 rounded border border-indigo-200">🔍 İçeriği Gör</span>
-                  </button>
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900">{order.customerName}</h3>
-                    <p className="text-[11px] text-slate-500">{order.company} • {order.phone}</p>
+            {productionStages.map((st) => {
+              const count = orders.filter((o) => o.status === st.key).length;
+              return (
+                <button
+                  key={st.key}
+                  onClick={() => setSelectedStatus(st.key)}
+                  className={`px-3.5 py-1.5 rounded-lg border font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
+                    selectedStatus === st.key
+                      ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <span>{st.label}</span>
+                  <span className="text-[10px] bg-slate-100 text-slate-800 px-1.5 py-0.2 rounded font-mono font-bold">{count}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Orders List / Cards */}
+          <div className="space-y-4">
+            {filteredOrders.map((order) => {
+              const currentStageObj = productionStages.find((s) => s.key === order.status) || productionStages[0];
+              return (
+                <div
+                  key={order.id}
+                  className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm hover:border-slate-300 transition-all space-y-4"
+                >
+                  {/* Order Header */}
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-slate-100 pb-3.5">
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => setActiveDetailOrder(order)}
+                        title="Sipariş detayını ve satır satır içerikleri açmak için tıklayın"
+                        className="text-sm font-extrabold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg border border-indigo-200 transition-colors font-mono cursor-pointer flex items-center gap-1.5"
+                      >
+                        <span>{order.orderNumber}</span>
+                        <span className="text-[10px] font-sans font-bold text-indigo-700 bg-white px-1.5 py-0.5 rounded border border-indigo-200">🔍 İçeriği Gör</span>
+                      </button>
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-900">{order.customerName}</h3>
+                        <p className="text-[11px] text-slate-500">{order.company} • {order.phone}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap justify-end">
+                      <span className="text-base font-extrabold text-slate-900 font-mono">
+                        {order.totalAmount.toLocaleString('tr-TR')} {getSymbol(order.currency)}
+                      </span>
+
+                      {/* Kalem İlave Et / Düzenle */}
+                      <button
+                        onClick={() => setActiveEditItemsOrder(order)}
+                        title="Siparişe Yeni Halı / Kalem İlave Et veya Düzenle"
+                        className="p-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg border border-indigo-200 cursor-pointer transition-colors flex items-center gap-1 text-xs font-bold"
+                      >
+                        <Plus className="w-3.5 h-3.5 text-indigo-600" />
+                        <span>Kalem İlave Et</span>
+                      </button>
+
+                      {/* Ön Ödeme Girişi */}
+                      <button
+                        onClick={() => setActiveAdvancePaymentOrder(order)}
+                        title="Ön Ödeme / Tahsilat Girişi Yap"
+                        className="p-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-lg border border-emerald-300 cursor-pointer transition-colors flex items-center gap-1 text-xs font-bold"
+                      >
+                        <Coins className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Ön Ödeme</span>
+                      </button>
+
+                      {/* Barkod İstasyonuna Gönder & Depodan Çıkart */}
+                      {onNavigateToBarcode && (
+                        <button
+                          onClick={() => onNavigateToBarcode(order)}
+                          title="Barkod Okutarak Bu Siparişi Depodan Çıkart"
+                          className="p-1.5 bg-slate-900 hover:bg-slate-800 text-amber-300 rounded-lg border border-slate-700 cursor-pointer transition-colors flex items-center gap-1 text-xs font-bold shadow-xs"
+                        >
+                          <ScanBarcode className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Barkodla Çıkart</span>
+                        </button>
+                      )}
+
+                      <button
+                        onClick={() => setActiveCostOrder(order)}
+                        title="Satış Bazlı Maliyet ve Görünmez Gider Analizi"
+                        className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-200 cursor-pointer transition-colors flex items-center gap-1 text-xs font-bold"
+                      >
+                        <Calculator className="w-3.5 h-3.5 text-slate-600" />
+                        <span className="hidden sm:inline">Maliyet</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setActiveProformaData({
+                            customerName: order.company || order.customerName,
+                            addressLine1: order.shippingAddress || 'Atatürk Mah. Sanayi Cad.',
+                            addressLine2: '34300 İstanbul',
+                            country: 'TURKEY',
+                            currency: 'USD',
+                            items: order.items.map((item) => ({
+                              id: item.id,
+                              description: `${item.collectionName} (${item.colorCode})`,
+                              subSpec: `${item.widthCm}x${item.lengthCm} cm - ${item.edgeFinish.toUpperCase()}`,
+                              rolls: item.quantity,
+                              sqm: Number(item.areaM2.toFixed(2)),
+                              unitPrice: Number((item.unitPricePerM2 / 33).toFixed(2)),
+                              amount: Number(((item.areaM2 * item.unitPricePerM2) / 33).toFixed(2)),
+                            })),
+                            grossWeightKg: Math.round(order.totalM2 * 2.8),
+                            netWeightKg: Math.round(order.totalM2 * 2.5),
+                          });
+                        }}
+                        title="Proforma Commercial Invoice Oluştur / Görüntüle"
+                        className="p-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg border border-amber-200 cursor-pointer transition-colors flex items-center gap-1 text-xs font-bold"
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Proforma</span>
+                      </button>
+
+                      <button
+                        onClick={() => setActivePrintOrder(order)}
+                        title="Atölye Fişi Yazdır"
+                        className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-200 cursor-pointer transition-colors"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                      </button>
+
+                      {onDeleteOrder && (
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`${order.orderNumber} nolu siparişi silmek istediğinizden emin misiniz?`)) {
+                              onDeleteOrder(order.id);
+                            }
+                          }}
+                          title="Siparişi Sil"
+                          className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg border border-transparent hover:border-rose-200 cursor-pointer transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <span className="text-base font-extrabold text-slate-900 font-mono">
-                    {order.totalAmount.toLocaleString('tr-TR')} ₺
-                  </span>
-                  <button
-                    onClick={() => setActiveCostOrder(order)}
-                    title="Satış Bazlı Maliyet ve Görünmez Gider Analizi"
-                    className="p-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg border border-indigo-200 cursor-pointer transition-colors flex items-center gap-1 text-xs font-bold"
-                  >
-                    <Calculator className="w-4 h-4 text-indigo-600" />
-                    <span className="hidden sm:inline">Maliyet & Kâr</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setActiveProformaData({
-                        customerName: order.company || order.customerName,
-                        addressLine1: order.shippingAddress || 'Atatürk Mah. Sanayi Cad.',
-                        addressLine2: '34300 İstanbul',
-                        country: 'TURKEY',
-                        currency: 'USD',
-                        items: order.items.map((item) => ({
-                          id: item.id,
-                          description: `${item.collectionName} (${item.colorCode})`,
-                          subSpec: `${item.widthCm}x${item.lengthCm} cm - ${item.edgeFinish.toUpperCase()}`,
-                          rolls: item.quantity,
-                          sqm: Number(item.areaM2.toFixed(2)),
-                          unitPrice: Number((item.unitPricePerM2 / 33).toFixed(2)),
-                          amount: Number(((item.areaM2 * item.unitPricePerM2) / 33).toFixed(2)),
-                        })),
-                        grossWeightKg: Math.round(order.totalM2 * 2.8),
-                        netWeightKg: Math.round(order.totalM2 * 2.5),
-                      });
-                    }}
-                    title="Proforma Commercial Invoice Oluştur"
-                    className="p-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg border border-amber-200 cursor-pointer transition-colors flex items-center gap-1 text-xs font-bold"
-                  >
-                    <FileText className="w-4 h-4" />
-                    <span className="hidden sm:inline">Proforma</span>
-                  </button>
-                  <button
-                    onClick={() => setActivePrintOrder(order)}
-                    title="Atölye Fişi Yazdır"
-                    className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-200 cursor-pointer transition-colors"
-                  >
-                    <Printer className="w-4 h-4" />
-                  </button>
-                  {onDeleteOrder && (
-                    <button
-                      onClick={() => {
-                        if (window.confirm(`${order.orderNumber} nolu siparişi silmek istediğinizden emin misiniz?`)) {
-                          onDeleteOrder(order.id);
-                        }
-                      }}
-                      title="Siparişi Sil"
-                      className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg border border-transparent hover:border-rose-200 cursor-pointer transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              </div>
 
               {/* Ön Ödeme & Bakiye Takip Barı */}
               {(() => {
@@ -696,12 +823,24 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                         <Clock className="w-4 h-4 text-amber-600" />
                         <span>Sipariş Üretimde! Termin Tarihi: <strong className="font-mono text-indigo-900">{order.deliveryDate}</strong></span>
                       </div>
-                      <button
-                        onClick={() => onUpdateOrderStatus(order.id, 'teslim')}
-                        className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs py-2 px-4 rounded-lg flex items-center justify-center gap-2 shadow-sm cursor-pointer transition-all"
-                      >
-                        <CheckCircle className="w-4 h-4" /> ✅ Teslim Edildi Olarak Tıkla & Bitir
-                      </button>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {onNavigateToBarcode && (
+                          <button
+                            type="button"
+                            onClick={() => onNavigateToBarcode(order)}
+                            className="bg-slate-900 hover:bg-slate-800 text-amber-300 font-bold text-xs py-2 px-3 rounded-lg flex items-center gap-1.5 shadow-sm cursor-pointer transition-all active:scale-95"
+                          >
+                            <ScanBarcode className="w-4 h-4 text-amber-400" />
+                            <span>📦 Barkodla Depodan Çıkart →</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => onUpdateOrderStatus(order.id, 'teslim')}
+                          className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs py-2 px-4 rounded-lg flex items-center justify-center gap-2 shadow-sm cursor-pointer transition-all"
+                        >
+                          <CheckCircle className="w-4 h-4" /> ✅ Teslim Edildi Olarak Tıkla & Bitir
+                        </button>
+                      </div>
                     </div>
                   );
                 } else {
@@ -722,7 +861,16 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   <span className="flex items-center gap-1.5 text-indigo-700">
                     <Layers className="w-3.5 h-3.5" /> Sipariş İçerik Kalemleri ({order.items.length} Kalem)
                   </span>
-                  <span className="font-mono text-slate-500">Toplam: {order.totalM2.toFixed(2)} m²</span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-slate-500">Toplam: {order.totalM2.toFixed(2)} m²</span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveEditItemsOrder(order)}
+                      className="px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded font-bold text-[10px] flex items-center gap-1 cursor-pointer transition-colors"
+                    >
+                      <Plus className="w-3 h-3" /> Bu Siparişe Kalem İlave Et
+                    </button>
+                  </div>
                 </div>
 
                 {/* Table Header for Desktop */}
@@ -806,6 +954,223 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
           );
         })}
       </div>
+      </div>
+      )}
+
+      {/* Proformas & Quotes Tab View */}
+      {viewMode === 'proformas' && (
+        <div className="space-y-4">
+          {/* Proforma Filter Pills */}
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
+            <button
+              onClick={() => setProformaFilter('all')}
+              className={`px-3.5 py-1.5 rounded-lg border font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                proformaFilter === 'all'
+                  ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              Tüm Teklifler & Proformalar ({proformas.length})
+            </button>
+            <button
+              onClick={() => setProformaFilter('pending')}
+              className={`px-3.5 py-1.5 rounded-lg border font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
+                proformaFilter === 'pending'
+                  ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                  : 'bg-white text-amber-800 border-amber-200 hover:bg-amber-50'
+              }`}
+            >
+              <Clock className="w-3.5 h-3.5" />
+              <span>Müşteri Onayı Bekleyenler</span>
+              <span className="text-[10px] bg-amber-100 text-amber-900 px-1.5 py-0.2 rounded font-mono font-bold">
+                {proformas.filter(p => p.status !== 'onaylandi').length}
+              </span>
+            </button>
+            <button
+              onClick={() => setProformaFilter('approved')}
+              className={`px-3.5 py-1.5 rounded-lg border font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
+                proformaFilter === 'approved'
+                  ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                  : 'bg-white text-emerald-800 border-emerald-200 hover:bg-emerald-50'
+              }`}
+            >
+              <CheckCircle className="w-3.5 h-3.5" />
+              <span>Onaylandı & Siparişe Aktarıldı</span>
+              <span className="text-[10px] bg-emerald-100 text-emerald-900 px-1.5 py-0.2 rounded font-mono font-bold">
+                {proformas.filter(p => p.status === 'onaylandi').length}
+              </span>
+            </button>
+          </div>
+
+          {/* Proformas Cards List */}
+          {(() => {
+            const filteredProformas = proformas.filter(pf => {
+              const matchesSearch = 
+                (pf.invoiceNumber || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                (pf.customerName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                (pf.country || '').toLowerCase().includes(searchTerm.toLowerCase());
+              const isApproved = pf.status === 'onaylandi';
+              if (proformaFilter === 'pending') return matchesSearch && !isApproved;
+              if (proformaFilter === 'approved') return matchesSearch && isApproved;
+              return matchesSearch;
+            });
+
+            if (filteredProformas.length === 0) {
+              return (
+                <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center space-y-3">
+                  <div className="w-12 h-12 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center mx-auto border border-amber-200">
+                    <FileText className="w-6 h-6" />
+                  </div>
+                  <h3 className="font-extrabold text-slate-800 text-sm">Henüz kayıtlı proforma teklif bulunamadı</h3>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto">
+                    Müşterilerinize özel teklif oluşturmak için sağ üstteki "Yeni Proforma Teklif Oluştur" butonuna basabilir, PDF alıp iletebilir ve onaylandığında tek tıkla siparişe aktarabilirsiniz.
+                  </p>
+                  <button
+                    onClick={() => {
+                      if (onOpenProformaModal) onOpenProformaModal();
+                      else setActiveProformaData({});
+                    }}
+                    className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl shadow-xs cursor-pointer inline-flex items-center gap-1.5"
+                  >
+                    <Plus className="w-4 h-4" /> Yeni Teklif / Proforma Oluştur
+                  </button>
+                </div>
+              );
+            }
+
+            return (
+              <div className="grid grid-cols-1 gap-4">
+                {filteredProformas.map((pf, idx) => {
+                  const isApproved = pf.status === 'onaylandi';
+                  const totalAmount = pf.items.reduce((sum, item) => sum + (Number(item.amount) || ((Number(item.sqm) || 0) * (Number(item.unitPrice) || 0))), 0);
+                  const totalM2 = pf.items.reduce((sum, item) => sum + (Number(item.sqm) || 0), 0);
+                  const totalRolls = pf.items.reduce((sum, item) => sum + (Number(item.rolls) || 0), 0);
+                  const currSym = getSymbol(pf.currency);
+
+                  return (
+                    <div
+                      key={pf.id || pf.invoiceNumber || idx}
+                      className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs hover:border-slate-300 transition-all space-y-4"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                        <div className="flex items-center gap-3">
+                          <span className="px-2.5 py-1 bg-amber-50 text-amber-800 border border-amber-200 font-mono font-bold text-xs rounded-lg">
+                            {pf.invoiceNumber || 'PRF-2026'}
+                          </span>
+                          <div>
+                            <h3 className="font-extrabold text-slate-900 text-sm">{pf.customerName}</h3>
+                            <p className="text-xs text-slate-500 font-medium">
+                              {pf.country} • {pf.incoterms} • Tarih: <span className="font-mono">{pf.date}</span>
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 flex-wrap justify-end">
+                          {isApproved ? (
+                            <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-extrabold flex items-center gap-1">
+                              <CheckCircle className="w-3.5 h-3.5 text-emerald-600" /> Onaylandı & Siparişe Aktarıldı
+                            </span>
+                          ) : (
+                            <span className="px-2.5 py-1 bg-amber-100 text-amber-900 border border-amber-300 rounded-lg text-xs font-extrabold flex items-center gap-1">
+                              <Clock className="w-3.5 h-3.5 text-amber-600" /> Müşteri Onayı Bekliyor (Teklif Gönderildi)
+                            </span>
+                          )}
+
+                          {/* PDF İndir / Yazdır */}
+                          <button
+                            type="button"
+                            onClick={() => setActiveProformaData(pf)}
+                            title="Proforma Faturayı PDF İndir veya Görüntüle"
+                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                            <span>PDF İndir / Yazdır</span>
+                          </button>
+
+                          {/* Düzenle */}
+                          <button
+                            type="button"
+                            onClick={() => setActiveProformaData(pf)}
+                            title="Proforma Teklifi Düzenle"
+                            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer transition-all"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            <span>Düzenle</span>
+                          </button>
+
+                          {/* Tek Tıkla Müşteri Onayı & Siparişe Dönüştür */}
+                          {!isApproved && onConvertToOrder && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setProformaToApprove(pf);
+                                setProformaAdvanceAmount(Math.round(totalAmount * 0.3));
+                                setProformaAdvanceNotes(`Proforma (${pf.invoiceNumber || ''}) müşteri onayı ile siparişe aktarıldı.`);
+                              }}
+                              title="Müşteri onay verdiyse ve ön ödeme ilettiyse tek tıkla siparişe dönüştürün"
+                              className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-extrabold flex items-center gap-1.5 cursor-pointer transition-all shadow-sm active:scale-95"
+                            >
+                              <CheckCircle className="w-4 h-4 text-emerald-200" />
+                              <span>🚀 Müşteri Onayladı & Ön Ödeme Al</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Items Summary Table */}
+                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 overflow-x-auto">
+                        <table className="w-full text-xs text-left">
+                          <thead>
+                            <tr className="text-[10px] text-slate-500 font-mono font-bold uppercase border-b border-slate-200 pb-1">
+                              <th className="pb-1.5">Kalem Açıklaması / Halı</th>
+                              <th className="pb-1.5 text-center">Rulo/Kap</th>
+                              <th className="pb-1.5 text-right">Metrekare</th>
+                              <th className="pb-1.5 text-right">Birim Fiyat</th>
+                              <th className="pb-1.5 text-right">Toplam Tutar</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {pf.items.map((item, itIdx) => (
+                              <tr key={item.id || itIdx} className="hover:bg-slate-100/60 font-mono">
+                                <td className="py-1.5 font-sans font-bold text-slate-900">
+                                  {item.description}
+                                  {item.subSpec && <span className="block text-[11px] text-slate-500 font-sans">{item.subSpec}</span>}
+                                </td>
+                                <td className="py-1.5 text-center text-slate-700">{item.rolls} Rulo</td>
+                                <td className="py-1.5 text-right font-bold text-slate-800">{Number(item.sqm).toFixed(2)} m²</td>
+                                <td className="py-1.5 text-right text-slate-600">{Number(item.unitPrice).toFixed(2)} {currSym}</td>
+                                <td className="py-1.5 text-right font-extrabold text-indigo-700">{Number(item.amount).toLocaleString('tr-TR', { minimumFractionDigits: 2 })} {currSym}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {/* Footer Totals */}
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1 text-xs">
+                        <div className="flex items-center gap-3 text-slate-600 font-mono">
+                          <span>Toplam Kalem: <strong className="text-slate-900">{pf.items.length}</strong></span>
+                          <span>•</span>
+                          <span>Toplam Alan: <strong className="text-slate-900">{totalM2.toFixed(2)} m²</strong></span>
+                          <span>•</span>
+                          <span>Paket: <strong className="text-slate-900">{pf.totalPackages || `${totalRolls} Rulo`}</strong></span>
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          <span className="text-slate-500 font-bold">Teklif Toplamı:</span>
+                          <span className="font-mono text-base font-extrabold text-emerald-700">
+                            {totalAmount.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} {currSym}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+      )}
 
       {/* New Custom Order Modal */}
       {isNewOrderModalOpen && (
@@ -1563,8 +1928,198 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         <ProformaInvoiceModal
           initialData={activeProformaData}
           onClose={() => setActiveProformaData(null)}
+          onSaveProforma={(data) => {
+            if (onSaveProforma) onSaveProforma(data);
+            setActiveProformaData(null);
+          }}
+          onConvertToOrder={(data, advance) => {
+            if (onConvertToOrder) onConvertToOrder(data, advance);
+            setActiveProformaData(null);
+          }}
         />
       )}
+
+      {/* Edit Order Items Modal */}
+      {activeEditItemsOrder && (
+        <EditOrderItemsModal
+          order={activeEditItemsOrder}
+          onClose={() => setActiveEditItemsOrder(null)}
+          onSave={(updatedOrder) => {
+            if (onUpdateOrder) {
+              onUpdateOrder(updatedOrder);
+            }
+            setActiveEditItemsOrder(null);
+          }}
+        />
+      )}
+
+      {/* Advance Payment Modal */}
+      {activeAdvancePaymentOrder && (
+        <AdvancePaymentModal
+          order={activeAdvancePaymentOrder}
+          onClose={() => setActiveAdvancePaymentOrder(null)}
+          onSave={(updatedOrder) => {
+            if (onUpdateOrder) {
+              onUpdateOrder(updatedOrder);
+            }
+            setActiveAdvancePaymentOrder(null);
+          }}
+        />
+      )}
+
+      {/* 1-Click Proforma Customer Approval Modal */}
+      {proformaToApprove && (() => {
+        const total = proformaToApprove.items.reduce((s, i) => s + (i.amount || ((i.sqm || 0) * (i.unitPrice || 0))), 0);
+        const currSym = getSymbol(proformaToApprove.currency);
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 animate-fade-in">
+            <div className="bg-slate-900 border border-slate-700 w-full max-w-lg rounded-2xl p-5 sm:p-6 shadow-2xl text-slate-100 space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 bg-emerald-500/20 text-emerald-400 rounded-xl border border-emerald-500/30">
+                    <CheckCircle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-extrabold text-white">Müşteri Onayı & Siparişe Aktarma</h3>
+                    <p className="text-xs text-slate-400">Tek tıkla onaylanmış bölüme geçirilir ve üretime hazır hale gelir.</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setProformaToApprove(null)}
+                  className="text-slate-400 hover:text-white p-1 rounded-lg cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Summary */}
+              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 space-y-1.5 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Müşteri:</span>
+                  <strong className="text-white font-bold">{proformaToApprove.customerName}</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Proforma No:</span>
+                  <span className="font-mono text-indigo-400 font-bold">{proformaToApprove.invoiceNumber}</span>
+                </div>
+                <div className="flex justify-between border-t border-slate-800/80 pt-1.5">
+                  <span className="text-slate-400">Teklif Toplam Tutarı:</span>
+                  <span className="font-mono font-extrabold text-emerald-400 text-sm">
+                    {total.toLocaleString('tr-TR', { minimumFractionDigits: 2 })} {currSym}
+                  </span>
+                </div>
+              </div>
+
+              {/* Advance Payment Inputs */}
+              <div className="space-y-3 text-xs">
+                <div>
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="font-bold text-slate-200 flex items-center gap-1.5">
+                      <Coins className="w-4 h-4 text-amber-400" /> Alınan Ön Ödeme Tutarı
+                    </label>
+                    <span className="text-[11px] text-slate-400 font-mono">
+                      Kalan: {Math.max(0, total - (proformaAdvanceAmount || 0)).toLocaleString('tr-TR')} {currSym}
+                    </span>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      value={proformaAdvanceAmount || ''}
+                      onChange={(e) => setProformaAdvanceAmount(Number(e.target.value) || 0)}
+                      placeholder="0.00"
+                      className="flex-1 bg-slate-950 border border-slate-700 text-white font-mono font-bold px-3 py-2 rounded-xl focus:border-indigo-500 focus:outline-none"
+                    />
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setProformaAdvanceAmount(Math.round(total * 0.3))}
+                        className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-amber-300 rounded-lg border border-slate-700"
+                      >
+                        %30
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setProformaAdvanceAmount(Math.round(total * 0.5))}
+                        className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-amber-300 rounded-lg border border-slate-700"
+                      >
+                        %50
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setProformaAdvanceAmount(Math.round(total))}
+                        className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-emerald-300 rounded-lg border border-slate-700"
+                      >
+                        Tamamı
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setProformaAdvanceAmount(0)}
+                        className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-400 rounded-lg border border-slate-700"
+                      >
+                        0
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-200 block mb-1">
+                    Ödeme Dekont Notu / Açıklama
+                  </label>
+                  <input
+                    type="text"
+                    value={proformaAdvanceNotes}
+                    onChange={(e) => setProformaAdvanceNotes(e.target.value)}
+                    placeholder="Örn: Garanti Bankası Havalesi - Dekont No: 12093"
+                    className="w-full bg-slate-950 border border-slate-700 text-white px-3 py-2 rounded-xl focus:border-indigo-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-200 block mb-1">
+                    Söz Verilen Termin Tarihi
+                  </label>
+                  <input
+                    type="date"
+                    value={proformaDeliveryDate}
+                    onChange={(e) => setProformaDeliveryDate(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-700 text-white font-mono px-3 py-2 rounded-xl focus:border-indigo-500 focus:outline-none cursor-pointer"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-slate-800 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setProformaToApprove(null)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs rounded-xl cursor-pointer"
+                >
+                  İptal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onConvertToOrder) {
+                      onConvertToOrder(proformaToApprove, {
+                        amount: proformaAdvanceAmount,
+                        currency: proformaToApprove.currency,
+                        notes: proformaAdvanceNotes,
+                        deliveryDate: proformaDeliveryDate,
+                      });
+                    }
+                    setProformaToApprove(null);
+                    setViewMode('orders');
+                  }}
+                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-xl shadow-lg flex items-center gap-2 cursor-pointer transition-all active:scale-95"
+                >
+                  <CheckCircle className="w-4 h-4 text-emerald-200" />
+                  <span>Onayla ve Siparişi Başlat</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Order Cost & Hidden Expenses Modal */}
       {activeCostOrder && (

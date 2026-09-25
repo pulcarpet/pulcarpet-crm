@@ -54,13 +54,22 @@ export interface ProformaInvoiceData {
   netWeightKg: number;
   totalPackages?: string | number;
   customBankDetails?: Record<ProformaCurrency, BankDetails>;
+  status?: 'beklemede' | 'teklif_gonderildi' | 'onaylandi' | 'iptal';
+  convertedOrderId?: string;
+  approvalDate?: string;
+  advancePaymentAmount?: number;
+  advancePaymentCurrency?: ProformaCurrency;
+  advancePaymentNotes?: string;
 }
 
 interface ProformaInvoiceModalProps {
   initialData?: Partial<ProformaInvoiceData>;
   onClose: () => void;
   onSaveProforma?: (data: ProformaInvoiceData) => void;
-  onConvertToOrder?: (data: ProformaInvoiceData) => void;
+  onConvertToOrder?: (
+    data: ProformaInvoiceData, 
+    advancePayment?: { amount: number; currency: ProformaCurrency; notes: string; deliveryDate?: string }
+  ) => void;
 }
 
 // Default Bank Accounts for Pulcarpet (Pulur Tekstil) by Currency
@@ -123,6 +132,21 @@ export const ProformaInvoiceModal: React.FC<ProformaInvoiceModalProps> = ({
 
   const [isEditingBank, setIsEditingBank] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [proformaStatus, setProformaStatus] = useState<'beklemede' | 'teklif_gonderildi' | 'onaylandi' | 'iptal'>(
+    initialData?.status || 'beklemede'
+  );
+  const [saveToast, setSaveToast] = useState<string | null>(null);
+  const [isAdvanceModalOpen, setIsAdvanceModalOpen] = useState(false);
+  const [advanceAmount, setAdvanceAmount] = useState<number>(() => {
+    if (initialData?.advancePaymentAmount !== undefined) return initialData.advancePaymentAmount;
+    return 0;
+  });
+  const [advanceNotes, setAdvanceNotes] = useState<string>(
+    initialData?.advancePaymentNotes || 'Banka Havalesi / Ön Ödeme Dekontu'
+  );
+  const [deliveryDate, setDeliveryDate] = useState<string>(
+    new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+  );
 
   // Items List
   const [items, setItems] = useState<ProformaItem[]>(
@@ -742,14 +766,34 @@ SWIFT Code: ${activeBank.swiftCode}
           </div>
         </div>
 
+        {/* Save Toast Notification */}
+        {saveToast && (
+          <div className="bg-emerald-500/20 border-t border-b border-emerald-500/30 px-4 py-2.5 flex items-center justify-between text-xs text-emerald-200 print:hidden animate-fade-in">
+            <div className="flex items-center gap-2">
+              <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>{saveToast}</span>
+            </div>
+            <button
+              onClick={() => setSaveToast(null)}
+              className="text-emerald-400 hover:text-white text-xs font-bold px-2 py-0.5"
+            >
+              Tamam
+            </button>
+          </div>
+        )}
+
         {/* Modal Footer Controls - Hidden in Print */}
-        <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center justify-between shrink-0 print:hidden">
+        <div className="p-4 bg-slate-950 border-t border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0 print:hidden">
           <div className="text-xs text-slate-400 flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>PULCARPET resmi proforma / commercial invoice formatında hazırlanmaktadır.</span>
+            <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>
+              {proformaStatus === 'onaylandi' 
+                ? '✅ Bu proforma müşteri tarafından onaylandı ve siparişe aktarıldı.' 
+                : '💡 Proforma bir tekliftir: Kaydedip PDF alarak müşteriye iletebilirsiniz. Müşteri onayladığında tek tıkla siparişe dönüşür.'}
+            </span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
             <button
               type="button"
               onClick={onClose}
@@ -758,42 +802,12 @@ SWIFT Code: ${activeBank.swiftCode}
               Kapat
             </button>
 
-            {onConvertToOrder && (
-              <button
-                type="button"
-                onClick={() => {
-                  const proformaData: ProformaInvoiceData = {
-                    invoiceTitle,
-                    invoiceNumber,
-                    date,
-                    incoterms,
-                    customerName,
-                    addressLine1,
-                    addressLine2,
-                    country,
-                    currency,
-                    items,
-                    grossWeightKg,
-                    netWeightKg,
-                    totalPackages,
-                    customBankDetails: bankAccounts,
-                  };
-                  if (onSaveProforma) {
-                    onSaveProforma(proformaData);
-                  }
-                  onConvertToOrder(proformaData);
-                }}
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer flex items-center gap-1.5 transition-all"
-              >
-                <CheckCircle className="w-4 h-4" />
-                <span>Siparişe Dönüştür & Ön Ödeme Al</span>
-              </button>
-            )}
-
+            {/* 1. Sadece Kaydet (Teklif / Taslak) */}
             <button
               type="button"
               onClick={() => {
                 const proformaData: ProformaInvoiceData = {
+                  id: initialData?.id || `PRF-${Date.now()}`,
                   invoiceTitle,
                   invoiceNumber,
                   date,
@@ -808,22 +822,262 @@ SWIFT Code: ${activeBank.swiftCode}
                   netWeightKg,
                   totalPackages,
                   customBankDetails: bankAccounts,
+                  status: 'teklif_gonderildi',
+                  advancePaymentAmount: advanceAmount,
+                  advancePaymentCurrency: currency,
+                  advancePaymentNotes: advanceNotes,
                 };
                 if (onSaveProforma) {
                   onSaveProforma(proformaData);
                 }
+                setProformaStatus('teklif_gonderildi');
+                setSaveToast('Proforma teklif başarıyla kaydedildi! Bekleyen Teklifler listesinden istediğiniz zaman görüntüleyebilir veya müşteri onayladığında tek tıkla siparişe dönüştürebilirsiniz.');
+              }}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 hover:border-amber-500/60 font-bold text-xs rounded-xl shadow-xs cursor-pointer flex items-center gap-1.5 transition-all"
+            >
+              <FileText className="w-4 h-4 text-amber-400" />
+              <span>Teklifi Kaydet (Taslak)</span>
+            </button>
+
+            {/* 2. Müşteriye İletmek İçin PDF İndir / Yazdır */}
+            <button
+              type="button"
+              onClick={() => {
+                const proformaData: ProformaInvoiceData = {
+                  id: initialData?.id || `PRF-${Date.now()}`,
+                  invoiceTitle,
+                  invoiceNumber,
+                  date,
+                  incoterms,
+                  customerName,
+                  addressLine1,
+                  addressLine2,
+                  country,
+                  currency,
+                  items,
+                  grossWeightKg,
+                  netWeightKg,
+                  totalPackages,
+                  customBankDetails: bankAccounts,
+                  status: 'teklif_gonderildi',
+                  advancePaymentAmount: advanceAmount,
+                  advancePaymentCurrency: currency,
+                  advancePaymentNotes: advanceNotes,
+                };
+                if (onSaveProforma) {
+                  onSaveProforma(proformaData);
+                }
+                setProformaStatus('teklif_gonderildi');
                 handlePrint();
               }}
-              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer flex items-center gap-2 transition-all active:scale-95"
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs rounded-xl shadow-sm cursor-pointer flex items-center gap-1.5 transition-all active:scale-95"
             >
-              <CheckCircle className="w-4 h-4 text-emerald-300" />
               <Printer className="w-4 h-4" />
-              <span>Onayla ve PDF Olarak İndir</span>
+              <span>PDF İndir / Yazdır</span>
             </button>
+
+            {/* 3. Müşteri Onayladı & Ön Ödeme Al (Siparişe Dönüştür) */}
+            {onConvertToOrder && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (advanceAmount === 0 && grandTotal > 0) {
+                    setAdvanceAmount(Math.round(grandTotal * 0.3));
+                  }
+                  setIsAdvanceModalOpen(true);
+                }}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer flex items-center gap-1.5 transition-all active:scale-95"
+              >
+                <CheckCircle className="w-4 h-4 text-emerald-200" />
+                <span>Müşteri Onayladı & Siparişe Aktar</span>
+              </button>
+            )}
           </div>
         </div>
 
       </div>
+
+      {/* Customer Approval & Advance Payment Dialog */}
+      {isAdvanceModalOpen && (
+        <div className="fixed inset-0 z-60 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-3">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg p-5 shadow-2xl space-y-4 text-slate-100">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-500/20 text-emerald-400 rounded-xl border border-emerald-500/30">
+                  <CheckCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-extrabold text-white">Müşteri Onayı & Siparişe Dönüştürme</h3>
+                  <p className="text-xs text-slate-400">Teklif onaylandı olarak işaretlenecek ve sipariş başlatılacaktır.</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsAdvanceModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Summary Info */}
+            <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-xl space-y-1.5 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Müşteri / Proje:</span>
+                <span className="font-bold text-white">{customerName}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Proforma No:</span>
+                <span className="font-mono font-bold text-indigo-400">{invoiceNumber}</span>
+              </div>
+              <div className="flex justify-between border-t border-slate-800/80 pt-1.5">
+                <span className="text-slate-400">Toplam Teklif Tutarı:</span>
+                <span className="font-mono font-extrabold text-emerald-400">
+                  {getCurrencySymbol(currency)} {grandTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </span>
+              </div>
+            </div>
+
+            {/* Advance Payment Form */}
+            <div className="space-y-3 text-xs">
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="font-bold text-slate-200 flex items-center gap-1.5">
+                    <Coins className="w-4 h-4 text-amber-400" /> Alınan Ön Ödeme (Kapora) Tutarı
+                  </label>
+                  <span className="text-[11px] text-slate-400 font-mono">
+                    Kalan Bakiye: {getCurrencySymbol(currency)} {Math.max(0, grandTotal - (advanceAmount || 0)).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <input
+                      type="number"
+                      value={advanceAmount || ''}
+                      onChange={(e) => setAdvanceAmount(Number(e.target.value) || 0)}
+                      placeholder="0.00"
+                      className="w-full bg-slate-950 border border-slate-700 text-white font-mono font-bold px-3 py-2 rounded-xl focus:border-indigo-500 focus:outline-none"
+                    />
+                    <span className="absolute right-3 top-2.5 font-bold text-slate-400 font-mono">
+                      {currency}
+                    </span>
+                  </div>
+                  {/* Quick percentage buttons */}
+                  <div className="flex gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setAdvanceAmount(Math.round(grandTotal * 0.3))}
+                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-amber-300 rounded-lg border border-slate-700"
+                    >
+                      %30
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdvanceAmount(Math.round(grandTotal * 0.5))}
+                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-amber-300 rounded-lg border border-slate-700"
+                    >
+                      %50
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdvanceAmount(Math.round(grandTotal))}
+                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-emerald-300 rounded-lg border border-slate-700"
+                    >
+                      Tamamı
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdvanceAmount(0)}
+                      className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-400 rounded-lg border border-slate-700"
+                    >
+                      0
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-200 block mb-1">
+                  Ödeme Dekont Notu / Açıklama
+                </label>
+                <input
+                  type="text"
+                  value={advanceNotes}
+                  onChange={(e) => setAdvanceNotes(e.target.value)}
+                  placeholder="Örn: Garanti Bankası Havalesi - Dekont No: 98124"
+                  className="w-full bg-slate-950 border border-slate-700 text-white px-3 py-2 rounded-xl focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-200 block mb-1">
+                  Söz Verilen Termin / Teslimat Tarihi
+                </label>
+                <input
+                  type="date"
+                  value={deliveryDate}
+                  onChange={(e) => setDeliveryDate(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 text-white font-mono px-3 py-2 rounded-xl focus:border-indigo-500 focus:outline-none cursor-pointer"
+                />
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="pt-2 border-t border-slate-800 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsAdvanceModalOpen(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs rounded-xl"
+              >
+                İptal
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const proformaData: ProformaInvoiceData = {
+                    id: initialData?.id || `PRF-${Date.now()}`,
+                    invoiceTitle,
+                    invoiceNumber,
+                    date,
+                    incoterms,
+                    customerName,
+                    addressLine1,
+                    addressLine2,
+                    country,
+                    currency,
+                    items,
+                    grossWeightKg,
+                    netWeightKg,
+                    totalPackages,
+                    customBankDetails: bankAccounts,
+                    status: 'onaylandi',
+                    advancePaymentAmount: advanceAmount,
+                    advancePaymentCurrency: currency,
+                    advancePaymentNotes: advanceNotes,
+                  };
+                  if (onSaveProforma) {
+                    onSaveProforma(proformaData);
+                  }
+                  if (onConvertToOrder) {
+                    onConvertToOrder(proformaData, {
+                      amount: advanceAmount,
+                      currency,
+                      notes: advanceNotes,
+                      deliveryDate,
+                    });
+                  }
+                  setIsAdvanceModalOpen(false);
+                }}
+                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-xl shadow-lg flex items-center gap-2 cursor-pointer transition-all active:scale-95"
+              >
+                <CheckCircle className="w-4 h-4 text-emerald-200" />
+                <span>Onayla ve Siparişi Başlat</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };

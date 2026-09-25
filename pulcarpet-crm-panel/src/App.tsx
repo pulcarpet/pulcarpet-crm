@@ -49,7 +49,8 @@ import {
   VatTransaction,
   ParasutConfig,
   ParasutInvoice,
-  OrderCostBreakdown
+  OrderCostBreakdown,
+  CarpetOrderItem
 } from './types';
 
 export default function App() {
@@ -57,6 +58,7 @@ export default function App() {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [isProformaModalOpen, setIsProformaModalOpen] = useState<boolean>(false);
   const [proformaInitialData, setProformaInitialData] = useState<Partial<ProformaInvoiceData> | undefined>(undefined);
+  const [selectedOrderForBarcode, setSelectedOrderForBarcode] = useState<Order | null>(null);
   const [isExcelModalOpen, setIsExcelModalOpen] = useState<boolean>(false);
 
   const handleOpenProformaModal = (data?: Partial<ProformaInvoiceData>) => {
@@ -418,9 +420,85 @@ export default function App() {
     });
   };
 
-  const handleConvertToOrder = (data: ProformaInvoiceData) => {
-    handleSaveProforma(data);
-    setSelectedProformaForOrder(data);
+  const handleConvertToOrder = (
+    data: ProformaInvoiceData,
+    advance?: { amount: number; currency: 'USD' | 'EUR' | 'GBP' | 'TRY'; notes: string; deliveryDate?: string }
+  ) => {
+    let totalM2 = 0;
+    let totalAmount = 0;
+    const formattedItems: CarpetOrderItem[] = (data.items || []).map((item, idx) => {
+      const areaM2 = Number(item.sqm || 0);
+      const quantity = Number(item.rolls || 1);
+      const itemTotal = Number(item.amount || (areaM2 * (item.unitPrice || 0)));
+      totalM2 += areaM2;
+      totalAmount += itemTotal;
+      return {
+        id: `ITEM-PRF-${Date.now()}-${idx}`,
+        collectionName: item.description || 'PULCARPET Özel Seri Halı',
+        colorCode: item.subSpec || '',
+        dimensionMode: 'sqm',
+        widthCm: 0,
+        lengthCm: 0,
+        quantity,
+        areaM2: Number(areaM2.toFixed(2)),
+        fiberType: 'bambu_ipek',
+        pileHeightMm: 10,
+        edgeFinish: 'overlok',
+        unitPricePerM2: Number(item.unitPrice || 0),
+        totalPrice: Number(itemTotal.toFixed(2)),
+      };
+    });
+
+    const currencyMap: Record<string, 'TL' | 'USD' | 'EUR' | 'GBP'> = {
+      USD: 'USD',
+      EUR: 'EUR',
+      GBP: 'GBP',
+      TRY: 'TL',
+    };
+    const orderCurrency = currencyMap[data.currency] || 'USD';
+    const advAmount = advance ? advance.amount : (data.advancePaymentAmount || 0);
+    const advNotes = advance ? advance.notes : (data.advancePaymentNotes || `Proforma (${data.invoiceNumber || ''}) onaylandı.`);
+    const advCurrency = advance ? currencyMap[advance.currency] || orderCurrency : orderCurrency;
+
+    const newOrder: Order = {
+      id: `ORD-${Math.floor(1000 + Math.random() * 9000)}`,
+      orderNumber: `PUL-2026-${Math.floor(100 + Math.random() * 900)}`,
+      customerName: data.customerName || 'Müşteri Projesi',
+      company: data.customerName || '',
+      phone: '+90 532 000 00 00',
+      items: formattedItems,
+      totalM2: Number(totalM2.toFixed(2)),
+      totalAmount: Number(totalAmount.toFixed(2)),
+      status: 'musteri_onayi', // 1. Sipariş & Ön Ödeme Alındı
+      customerApproved: true,
+      approvalDate: new Date().toISOString().split('T')[0],
+      createdAt: data.date || new Date().toISOString().split('T')[0],
+      deliveryDate: advance?.deliveryDate || new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      shippingAddress: `${data.addressLine1 || ''} ${data.addressLine2 || ''} ${data.country || ''}`.trim() || 'Fabrika Teslim',
+      isCustomProduction: true,
+      currency: orderCurrency,
+      hasAdvancePayment: advAmount > 0,
+      advancePaymentAmount: advAmount,
+      advancePaymentCurrency: advCurrency,
+      advancePaymentNotes: advNotes,
+      notes: `Proforma No: ${data.invoiceNumber || ''} üzerinden tek tıkla onaylanarak oluşturuldu. Teslim Şekli: ${data.incoterms || 'EXW'}`,
+    };
+
+    // Save order to state & cloud
+    handleUpdateOrders([newOrder, ...orders]);
+
+    // Save proforma as approved
+    const updatedProforma: ProformaInvoiceData = {
+      ...data,
+      status: 'onaylandi',
+      convertedOrderId: newOrder.id,
+      approvalDate: new Date().toISOString().split('T')[0],
+      advancePaymentAmount: advAmount,
+      advancePaymentNotes: advNotes,
+    };
+    handleSaveProforma(updatedProforma);
+
+    setSelectedProformaForOrder(null);
     setIsProformaModalOpen(false);
     setActiveTab('orders');
   };
@@ -1129,6 +1207,7 @@ const snapToValidVatRate = (rate: number): number => {
               onUpdateProducts={handleUpdateProducts}
               onUpdateOrders={handleUpdateOrders}
               currentUser={currentUser}
+              selectedDispatchOrder={selectedOrderForBarcode}
             />
           )}
 
@@ -1155,6 +1234,13 @@ const snapToValidVatRate = (rate: number): number => {
               onUpdateOrderStatus={handleUpdateOrderStatus}
               onDeleteOrder={handleDeleteOrder}
               onSaveOrderCost={handleSaveOrderCost}
+              onSaveProforma={handleSaveProforma}
+              onConvertToOrder={handleConvertToOrder}
+              onNavigateToBarcode={(order) => {
+                setSelectedOrderForBarcode(order);
+                setActiveTab('barcode');
+              }}
+              onOpenProformaModal={handleOpenProformaModal}
               searchTerm={searchTerm}
             />
           )}

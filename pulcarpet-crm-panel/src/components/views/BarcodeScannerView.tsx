@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { CarpetProduct, Order, CompanyProductPrice, ExpensePaymentRecord, ScannedBarcodeItem } from '../../types';
+import { CarpetProduct, Order, CompanyProductPrice, ExpensePaymentRecord, ScannedBarcodeItem, CarpetOrderItem } from '../../types';
 import { ScannedBarcodeExcelSection } from './ScannedBarcodeExcelSection';
 import { exportScannedBarcodesToExcel, exportScannedBarcodesToCSV } from '../../utils/excelExport';
 import { 
@@ -49,7 +49,9 @@ import {
   BadgePercent,
   UserCheck,
   Coins,
-  Store
+  Store,
+  Truck,
+  Clock
 } from 'lucide-react';
 
 interface BarcodeScannerViewProps {
@@ -58,6 +60,7 @@ interface BarcodeScannerViewProps {
   onUpdateProducts: (products: CarpetProduct[]) => void;
   onUpdateOrders: (orders: Order[]) => void;
   currentUser?: { username: string; name: string; role: string; token: string } | null;
+  selectedDispatchOrder?: Order | null;
 }
 
 interface StockMovementLog {
@@ -125,6 +128,7 @@ export const BarcodeScannerView: React.FC<BarcodeScannerViewProps> = ({
   onUpdateProducts,
   onUpdateOrders,
   currentUser,
+  selectedDispatchOrder,
 }) => {
   const [scannedBarcode, setScannedBarcode] = useState<string>('');
   const [selectedProduct, setSelectedProduct] = useState<CarpetProduct | null>(null);
@@ -245,8 +249,169 @@ export const BarcodeScannerView: React.FC<BarcodeScannerViewProps> = ({
   // Filter products state (to show/hide demos in quick selector)
   const [hideDemoProductsInSelector, setHideDemoProductsInSelector] = useState<boolean>(false);
 
-  // Active Sub-Tab: 'scanner' | 'scanned_list' | 'definition' | 'batch' | 'company_prices' | 'retail_sale' | 'expenses'
-  const [activeTab, setActiveTab] = useState<'scanner' | 'scanned_list' | 'definition' | 'batch' | 'company_prices' | 'retail_sale' | 'expenses'>('scanner');
+  // Active Sub-Tab: 'scanner' | 'scanned_list' | 'definition' | 'batch' | 'company_prices' | 'retail_sale' | 'expenses' | 'order_dispatch'
+  const [activeTab, setActiveTab] = useState<'scanner' | 'scanned_list' | 'definition' | 'batch' | 'company_prices' | 'retail_sale' | 'expenses' | 'order_dispatch'>(
+    selectedDispatchOrder ? 'order_dispatch' : 'scanner'
+  );
+
+  // Order Dispatch & Warehouse Exit States
+  const [selectedDispatchOrderId, setSelectedDispatchOrderId] = useState<string>(() => {
+    if (selectedDispatchOrder) return selectedDispatchOrder.id;
+    const inProd = orders.find(o => o.status !== 'teslim');
+    return inProd ? inProd.id : (orders[0]?.id || '');
+  });
+  const [dispatchBarcodeInput, setDispatchBarcodeInput] = useState<string>('');
+  const [dispatchSearchFilter, setDispatchSearchFilter] = useState<string>('');
+  const [dispatchStatusFilter, setDispatchStatusFilter] = useState<'all' | 'in_progress' | 'completed'>('all');
+  const [dispatchSlipOrder, setDispatchSlipOrder] = useState<Order | null>(null);
+  const [isDispatchSlipOpen, setIsDispatchSlipOpen] = useState<boolean>(false);
+  const [dispatchSuccessToast, setDispatchSuccessToast] = useState<string | null>(null);
+
+  // Map of orderId -> { [itemId]: number (scannedCount) }
+  const [scannedDispatchItems, setScannedDispatchItems] = useState<Record<string, Record<string, number>>>(() => {
+    try {
+      const saved = localStorage.getItem('dispatch_scanned_order_items');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return {};
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('dispatch_scanned_order_items', JSON.stringify(scannedDispatchItems));
+    } catch (e) {}
+  }, [scannedDispatchItems]);
+
+  useEffect(() => {
+    if (selectedDispatchOrder) {
+      setSelectedDispatchOrderId(selectedDispatchOrder.id);
+      setActiveTab('order_dispatch');
+    }
+  }, [selectedDispatchOrder]);
+
+  const getItemBarcode = (item: CarpetOrderItem): string => {
+    const matched = products.find(p =>
+      (item.colorCode && p.code && p.code.toLowerCase().includes(item.colorCode.toLowerCase())) ||
+      (item.collectionName && p.name && p.name.toLowerCase().includes(item.collectionName.toLowerCase()))
+    );
+    if (matched?.barcode && matched.barcode.trim()) {
+      return matched.barcode.trim();
+    }
+    const cleanId = (item.id || '101').replace(/\D/g, '').padEnd(10, '0').slice(0, 10);
+    return `869${cleanId}`;
+  };
+
+  const handleDispatchScan = (rawCode: string) => {
+    const barcode = rawCode.trim();
+    if (!barcode) return;
+
+    const currentOrder = orders.find(o => o.id === selectedDispatchOrderId);
+    if (!currentOrder) {
+      showToast('error', 'Lütfen önce depodan çıkış yapılacak siparişi seçiniz.');
+      return;
+    }
+
+    if (!currentOrder.items || currentOrder.items.length === 0) {
+      showToast('error', 'Bu siparişte çıkış yapılacak kalem bulunmamaktadır.');
+      return;
+    }
+
+    // Find matching item in this order
+    const matchedItem = currentOrder.items.find(item => {
+      const itemBc = getItemBarcode(item);
+      const isBarcodeMatch = itemBc.replace(/\s/g, '') === barcode.replace(/\s/g, '');
+      const isIdMatch = item.id.toLowerCase() === barcode.toLowerCase();
+      const isColorMatch = item.colorCode && item.colorCode.toLowerCase() === barcode.toLowerCase();
+      const matchedProd = products.find(p => p.barcode && p.barcode.replace(/\s/g, '') === barcode.replace(/\s/g, ''));
+      const isProdMatch = matchedProd && (
+        (item.colorCode && matchedProd.code && matchedProd.code.toLowerCase().includes(item.colorCode.toLowerCase())) ||
+        (item.collectionName && matchedProd.name && matchedProd.name.toLowerCase().includes(item.collectionName.toLowerCase()))
+      );
+      return isBarcodeMatch || isIdMatch || isColorMatch || isProdMatch;
+    });
+
+    if (matchedItem) {
+      const orderScans = scannedDispatchItems[currentOrder.id] || {};
+      const currentScanned = orderScans[matchedItem.id] || 0;
+      const targetQuantity = matchedItem.quantity || 1;
+
+      const newCount = currentScanned + 1;
+      setScannedDispatchItems(prev => ({
+        ...prev,
+        [currentOrder.id]: {
+          ...(prev[currentOrder.id] || {}),
+          [matchedItem.id]: newCount
+        }
+      }));
+
+      playBeepSound();
+      const isItemCompleted = newCount >= targetQuantity;
+      const toastMsg = isItemCompleted 
+        ? `✓ ${matchedItem.collectionName} (${matchedItem.colorCode}) tamamlandı (${newCount}/${targetQuantity} adet okutuldu)! Depodan ayrıldı.`
+        : `✓ ${matchedItem.collectionName} okutuldu (${newCount}/${targetQuantity} adet)`;
+      showToast('success', toastMsg);
+      setDispatchSuccessToast(toastMsg);
+      setDispatchBarcodeInput('');
+
+      // Check if all items in the order will be complete
+      const willBeAllComplete = currentOrder.items.every(it => {
+        if (it.id === matchedItem.id) return newCount >= (it.quantity || 1);
+        return (orderScans[it.id] || 0) >= (it.quantity || 1);
+      });
+
+      if (willBeAllComplete) {
+        setTimeout(() => {
+          showToast('success', `🎉 ${currentOrder.orderNumber} siparişinin TÜM kalemleri depodan okutuldu! Depo çıkışını tamamlayabilirsiniz.`);
+        }, 500);
+      }
+    } else {
+      playAlertSound();
+      showToast('error', `⚠️ Okutulan "${barcode}" barkodu ${currentOrder.orderNumber} nolu siparişin kalemleriyle eşleşmedi!`);
+      setDispatchBarcodeInput('');
+    }
+  };
+
+  const handleSingleItemScan = (orderId: string, item: CarpetOrderItem) => {
+    const orderScans = scannedDispatchItems[orderId] || {};
+    const currentScanned = orderScans[item.id] || 0;
+    const newCount = currentScanned + 1;
+    setScannedDispatchItems(prev => ({
+      ...prev,
+      [orderId]: {
+        ...(prev[orderId] || {}),
+        [item.id]: newCount
+      }
+    }));
+    playBeepSound();
+    showToast('success', `✓ ${item.collectionName} (${item.colorCode}) manuel okutuldu (${newCount}/${item.quantity || 1} adet)`);
+  };
+
+  const handleResetOrderScans = (orderId: string) => {
+    setScannedDispatchItems(prev => {
+      const next = { ...prev };
+      delete next[orderId];
+      return next;
+    });
+    showToast('info', 'Bu siparişin okutulan barkod sayaçları sıfırlandı.');
+  };
+
+  const handleCompleteOrderDispatch = (ord: Order) => {
+    const updatedOrders = orders.map(o => {
+      if (o.id === ord.id) {
+        return {
+          ...o,
+          status: 'teslim' as const,
+          notes: (o.notes ? `${o.notes} | ` : '') + `Depodan barkod okutularak çıkış yapıldı (${new Date().toLocaleDateString('tr-TR')} ${new Date().toLocaleTimeString('tr-TR')})`,
+        };
+      }
+      return o;
+    });
+    onUpdateOrders(updatedOrders);
+    playBeepSound();
+    showToast('success', `🎉 ${ord.orderNumber} nolu siparişin depo çıkışı tamamlandı ve durumu 'Teslim Edildi' yapıldı!`);
+    setDispatchSlipOrder(ord);
+    setIsDispatchSlipOpen(true);
+  };
 
   // Ödeme ve Harcama Kayıtları (Expenses & Payments) States
   const [expenseRecords, setExpenseRecords] = useState<ExpensePaymentRecord[]>(() => {
@@ -1446,6 +1611,25 @@ export const BarcodeScannerView: React.FC<BarcodeScannerViewProps> = ({
       {/* Sub-Navigation Tabs */}
       <div className="bg-white border border-slate-200 rounded-2xl p-2.5 shadow-xs flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 flex-wrap">
+          <button
+            onClick={() => setActiveTab('order_dispatch')}
+            className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 cursor-pointer ${
+              activeTab === 'order_dispatch'
+                ? 'bg-amber-600 text-white shadow-xs ring-2 ring-amber-400/50'
+                : 'bg-amber-50 text-amber-900 hover:bg-amber-100 border border-amber-300'
+            }`}
+          >
+            <Truck className={`w-4 h-4 ${activeTab === 'order_dispatch' ? 'text-white' : 'text-amber-600'}`} />
+            <span>Sipariş Depo Çıkış & Sevkiyat (Barkodlu)</span>
+            <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-md ${
+              activeTab === 'order_dispatch'
+                ? 'bg-amber-800 text-amber-100'
+                : 'bg-amber-200 text-amber-900'
+            }`}>
+              {orders.filter((o) => o.status !== 'teslim').length} Aktif
+            </span>
+          </button>
+
           <button
             onClick={() => setActiveTab('scanner')}
             className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 cursor-pointer ${
@@ -3926,6 +4110,645 @@ Bambu Yün Anatolia, 8699010020043`}
                   );
                 })()}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tab: Order Dispatch & Warehouse Exit with Barcode Scanning */}
+      {activeTab === 'order_dispatch' && (
+        <div className="space-y-6 animate-fade-in">
+          {/* Top Info Banner */}
+          <div className="bg-gradient-to-r from-amber-950 via-slate-900 to-amber-900 rounded-2xl p-6 text-white shadow-lg space-y-4 relative overflow-hidden">
+            <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none">
+              <Truck className="w-48 h-48 text-amber-300" />
+            </div>
+
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
+              <div className="space-y-1">
+                <span className="text-[11px] font-mono tracking-widest text-amber-400 font-bold uppercase bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-500/30">
+                  Depo & Lojistik Barkodlu Çıkış Terminali
+                </span>
+                <h2 className="text-xl font-black text-white tracking-tight flex items-center gap-2">
+                  <Truck className="w-6 h-6 text-amber-400" />
+                  Sipariş Depo Çıkış & Sevkiyat (Barkod Okutarak Çıkart)
+                </h2>
+                <p className="text-xs text-amber-200/80 max-w-2xl">
+                  Üretilen veya atölyedeki siparişlerin kalemlerini barkod okutarak depodan tek tek doğrulayarak çıkartın. Tüm kalemler okutulduğunda tek tıkla teslimat irsaliyesi düzenleyip siparişi tamamlayabilirsiniz.
+                </p>
+              </div>
+
+              {/* Quick Stat Badges */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="bg-slate-900/80 border border-amber-500/30 rounded-xl px-3 py-2 text-center">
+                  <div className="text-[10px] text-amber-300 font-bold">Toplam Sipariş</div>
+                  <div className="text-base font-black text-white font-mono">{orders.length}</div>
+                </div>
+                <div className="bg-amber-600/40 border border-amber-400/50 rounded-xl px-3 py-2 text-center">
+                  <div className="text-[10px] text-amber-200 font-bold">Çıkış Bekleyen</div>
+                  <div className="text-base font-black text-amber-300 font-mono">
+                    {orders.filter((o) => o.status !== 'teslim').length}
+                  </div>
+                </div>
+                <div className="bg-emerald-600/30 border border-emerald-500/40 rounded-xl px-3 py-2 text-center">
+                  <div className="text-[10px] text-emerald-200 font-bold">Teslim Edilen</div>
+                  <div className="text-base font-black text-emerald-300 font-mono">
+                    {orders.filter((o) => o.status === 'teslim').length}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Success Toast Banner */}
+          {dispatchSuccessToast && (
+            <div className="bg-emerald-500/15 border border-emerald-500/40 text-emerald-900 p-3 rounded-xl flex items-center justify-between text-xs font-bold animate-fade-in shadow-xs">
+              <div className="flex items-center gap-2">
+                <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>{dispatchSuccessToast}</span>
+              </div>
+              <button
+                onClick={() => setDispatchSuccessToast(null)}
+                className="text-emerald-700 hover:text-emerald-900 px-2 py-0.5 text-xs font-extrabold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {/* Order Selection & Filtering Controls */}
+          <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs space-y-4">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              {/* Order Select Dropdown */}
+              <div className="flex-1 space-y-1">
+                <label className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
+                  <PackageCheck className="w-4 h-4 text-amber-600" />
+                  Depodan Çıkartılacak Siparişi Seçin:
+                </label>
+                <select
+                  value={selectedDispatchOrderId}
+                  onChange={(e) => {
+                    setSelectedDispatchOrderId(e.target.value);
+                    setDispatchSuccessToast(null);
+                  }}
+                  className="w-full bg-slate-50 border border-slate-300 text-slate-900 font-bold text-xs p-2.5 rounded-xl cursor-pointer focus:ring-2 focus:ring-amber-500 focus:bg-white transition-all"
+                >
+                  <option value="" disabled>-- Bir Sipariş Seçin --</option>
+                  {orders.map((ord) => {
+                    const isDone = ord.status === 'teslim';
+                    const orderScans = scannedDispatchItems[ord.id] || {};
+                    const totalItems = ord.items?.length || 0;
+                    const scannedItemsCount = (ord.items || []).filter((it) => (orderScans[it.id] || 0) >= (it.quantity || 1)).length;
+                    return (
+                      <option key={ord.id} value={ord.id}>
+                        {isDone ? '✅ [TESLİM EDİLDİ]' : '⏳ [ÜRETİMDE / BEKLİYOR]'} {ord.orderNumber} - {ord.customerName} ({ord.company || 'Bireysel'}) - {totalItems} Kalem ({scannedItemsCount}/{totalItems} Barkodlandı)
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+
+              {/* Status Filters */}
+              <div className="flex items-center gap-1.5 flex-wrap pt-4 lg:pt-0">
+                <button
+                  type="button"
+                  onClick={() => setDispatchStatusFilter('all')}
+                  className={`px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    dispatchStatusFilter === 'all'
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  Tümü ({orders.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDispatchStatusFilter('in_progress')}
+                  className={`px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    dispatchStatusFilter === 'in_progress'
+                      ? 'bg-amber-600 text-white'
+                      : 'bg-amber-50 text-amber-900 hover:bg-amber-100 border border-amber-200'
+                  }`}
+                >
+                  Çıkış Bekleyen ({orders.filter((o) => o.status !== 'teslim').length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDispatchStatusFilter('completed')}
+                  className={`px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    dispatchStatusFilter === 'completed'
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-emerald-50 text-emerald-900 hover:bg-emerald-100 border border-emerald-200'
+                  }`}
+                >
+                  Tamamlanan ({orders.filter((o) => o.status === 'teslim').length})
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Main Selected Order & Barcode Scanning Board */}
+          {(() => {
+            const currentOrder = orders.find((o) => o.id === selectedDispatchOrderId);
+
+            if (!currentOrder) {
+              return (
+                <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center space-y-3 shadow-xs">
+                  <Truck className="w-12 h-12 text-slate-400 mx-auto" />
+                  <h3 className="text-base font-bold text-slate-800">Lütfen İşlem Yapmak İstediğiniz Siparişi Seçin</h3>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto">
+                    Yukarıdaki listeden sipariş seçerek depodan çıkış işlemlerini ve ürün barkod okutmasını başlatabilirsiniz.
+                  </p>
+                </div>
+              );
+            }
+
+            const orderScans = scannedDispatchItems[currentOrder.id] || {};
+            const items = currentOrder.items || [];
+            const totalItemsCount = items.length;
+            const completedItemsCount = items.filter((it) => (orderScans[it.id] || 0) >= (it.quantity || 1)).length;
+            const totalQtyTarget = items.reduce((s, it) => s + (it.quantity || 1), 0);
+            const totalQtyScanned = items.reduce((s, it) => s + Math.min(it.quantity || 1, orderScans[it.id] || 0), 0);
+            const progressPercent = totalQtyTarget > 0 ? Math.round((totalQtyScanned / totalQtyTarget) * 100) : 0;
+            const isAllScanned = totalItemsCount > 0 && completedItemsCount === totalItemsCount;
+            const isOrderDelivered = currentOrder.status === 'teslim';
+
+            return (
+              <div className="space-y-5">
+                {/* Order Information & Progress Card */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-base font-black text-indigo-700 bg-indigo-50 border border-indigo-200 px-3 py-1 rounded-lg">
+                          {currentOrder.orderNumber}
+                        </span>
+                        <span className={`px-2.5 py-1 rounded-lg text-xs font-extrabold flex items-center gap-1 ${
+                          isOrderDelivered
+                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                            : 'bg-amber-100 text-amber-900 border border-amber-300'
+                        }`}>
+                          {isOrderDelivered ? <CheckCircle className="w-3.5 h-3.5" /> : <Clock className="w-3.5 h-3.5" />}
+                          {isOrderDelivered ? 'Teslim Edildi' : 'Üretimde & Depo Çıkış Aşaması'}
+                        </span>
+                        <span className="text-xs text-slate-500 font-mono">
+                          Termin: <strong className="text-slate-900 font-bold">{currentOrder.deliveryDate}</strong>
+                        </span>
+                      </div>
+                      <h3 className="text-sm font-bold text-slate-900 pt-1">
+                        Müşteri: {currentOrder.customerName} {currentOrder.company ? `(${currentOrder.company})` : ''} • Tel: {currentOrder.phone}
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        Teslimat Adresi: {currentOrder.shippingAddress || 'Adres belirtilmedi'}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDispatchSlipOrder(currentOrder);
+                          setIsDispatchSlipOpen(true);
+                        }}
+                        className="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 flex items-center gap-1.5 transition-colors cursor-pointer"
+                      >
+                        <Printer className="w-4 h-4 text-slate-600" />
+                        <span>Sevk İrsaliyesi / Çıkış Fişi Yazdır</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleResetOrderScans(currentOrder.id)}
+                        className="px-3 py-2 rounded-xl text-xs font-bold text-slate-500 hover:text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-200 transition-colors cursor-pointer"
+                        title="Bu siparişin okutma sayaçlarını sıfırlar"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Sıfırla</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Progress Bar */}
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between items-center text-xs font-bold">
+                      <span className="text-slate-700 flex items-center gap-1.5">
+                        <ScanBarcode className="w-4 h-4 text-amber-600" />
+                        Depodan Okutulan Kalemler:
+                      </span>
+                      <span className="font-mono text-slate-900">
+                        <strong className="text-emerald-700 font-extrabold">{completedItemsCount} / {totalItemsCount} Kalem Tamamlandı</strong> ({totalQtyScanned} / {totalQtyTarget} Adet • %{progressPercent})
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden border border-slate-200">
+                      <div
+                        className={`h-full transition-all duration-300 ${
+                          isAllScanned ? 'bg-emerald-500' : 'bg-amber-500'
+                        }`}
+                        style={{ width: `${progressPercent}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Laser / USB Scanner Input Box */}
+                <div className="bg-slate-900 text-white rounded-2xl p-5 shadow-lg space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="p-2 bg-amber-500/20 text-amber-400 rounded-xl border border-amber-500/30">
+                        <ScanBarcode className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-white">Barkod Okuyucu Girişi</h4>
+                        <p className="text-xs text-slate-400">
+                          Barkod tabancası / USB okuyucu ile okutun veya barkod numarasını yazıp Enter'a basın
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-xs font-mono bg-slate-800 text-amber-300 px-2.5 py-1 rounded-lg border border-slate-700">
+                      ⚡ Otomatik Doğrulama Aktif
+                    </div>
+                  </div>
+
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleDispatchScan(dispatchBarcodeInput);
+                    }}
+                    className="flex gap-2"
+                  >
+                    <div className="relative flex-1">
+                      <input
+                        type="text"
+                        value={dispatchBarcodeInput}
+                        onChange={(e) => setDispatchBarcodeInput(e.target.value)}
+                        placeholder="Örn: 8699010020012 veya ürün kodu / ID..."
+                        autoFocus
+                        className="w-full bg-slate-950 border border-slate-700 text-white font-mono text-sm px-4 py-3 rounded-xl focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                      />
+                      {dispatchBarcodeInput && (
+                        <button
+                          type="button"
+                          onClick={() => setDispatchBarcodeInput('')}
+                          className="absolute right-3 top-3 text-slate-400 hover:text-white"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="px-5 py-3 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs rounded-xl shadow-md cursor-pointer transition-all active:scale-95 flex items-center gap-2"
+                    >
+                      <ScanBarcode className="w-4 h-4" />
+                      <span>Barkodu Doğrula & Çıkart</span>
+                    </button>
+                  </form>
+                </div>
+
+                {/* Items Checklist Table */}
+                <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                      <Box className="w-4 h-4 text-amber-600" />
+                      Siparişe Ait Çıkartılacak Kalemler ({items.length} Kalem)
+                    </h4>
+
+                    {/* Quick batch confirm button */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newScans: Record<string, number> = {};
+                        items.forEach((it) => {
+                          newScans[it.id] = it.quantity || 1;
+                        });
+                        setScannedDispatchItems((prev) => ({
+                          ...prev,
+                          [currentOrder.id]: newScans,
+                        }));
+                        playBeepSound();
+                        showToast('success', `Tüm kalemler (${items.length} kalem) tek seferde barkodla doğrulanmış sayıldı.`);
+                      }}
+                      className="text-xs font-bold text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-200 transition-colors cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Check className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Hepsini Otomatik Doğrula (Hızlı Çıkış)</span>
+                    </button>
+                  </div>
+
+                  <div className="space-y-3">
+                    {items.map((item, idx) => {
+                      const barcode = getItemBarcode(item);
+                      const scannedCount = orderScans[item.id] || 0;
+                      const targetQuantity = item.quantity || 1;
+                      const isItemComplete = scannedCount >= targetQuantity;
+
+                      return (
+                        <div
+                          key={item.id}
+                          className={`p-4 rounded-xl border transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                            isItemComplete
+                              ? 'bg-emerald-50/70 border-emerald-300'
+                              : 'bg-white border-slate-200 hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <span className={`w-7 h-7 rounded-lg text-xs font-bold flex items-center justify-center shrink-0 font-mono ${
+                              isItemComplete
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-slate-100 text-slate-700 border border-slate-200'
+                            }`}>
+                              {isItemComplete ? '✓' : idx + 1}
+                            </span>
+
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h5 className="font-extrabold text-sm text-slate-900">
+                                  {item.collectionName}
+                                </h5>
+                                {item.colorCode && (
+                                  <span className="text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-mono font-bold border border-slate-200">
+                                    Renk: {item.colorCode}
+                                  </span>
+                                )}
+                                <span className="text-xs bg-indigo-50 text-indigo-800 px-2 py-0.5 rounded font-bold border border-indigo-200">
+                                  {item.edgeFinish || 'overlok'}
+                                </span>
+                              </div>
+
+                              <div className="text-xs text-slate-600 flex flex-wrap items-center gap-3">
+                                <span>
+                                  Ölçü: <strong className="text-slate-900 font-bold">{item.widthCm && item.lengthCm ? `${item.widthCm}x${item.lengthCm} cm` : `${item.areaM2} m²`}</strong>
+                                </span>
+                                <span>•</span>
+                                <span>
+                                  Talep: <strong className="text-slate-900 font-bold">{targetQuantity} Adet</strong> ({item.areaM2.toFixed(2)} m²)
+                                </span>
+                                <span>•</span>
+                                <span className="font-mono text-slate-700">
+                                  Barkod: <strong className="text-indigo-700 font-bold">{barcode}</strong>
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-3 self-end md:self-auto flex-wrap">
+                            {/* Scanned Badge */}
+                            <div className={`px-3 py-1.5 rounded-xl text-xs font-extrabold font-mono flex items-center gap-1.5 border ${
+                              isItemComplete
+                                ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                                : 'bg-amber-50 text-amber-900 border-amber-300'
+                            }`}>
+                              {isItemComplete ? (
+                                <>
+                                  <CheckCircle className="w-4 h-4 text-emerald-600" />
+                                  <span>{scannedCount} / {targetQuantity} Adet Okutuldu (Hazır)</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Clock className="w-4 h-4 text-amber-600" />
+                                  <span>{scannedCount} / {targetQuantity} Adet (Depoda Bekliyor)</span>
+                                </>
+                              )}
+                            </div>
+
+                            {/* Manual scan button */}
+                            <button
+                              type="button"
+                              onClick={() => handleSingleItemScan(currentOrder.id, item)}
+                              className={`px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer transition-all flex items-center gap-1.5 active:scale-95 ${
+                                isItemComplete
+                                  ? 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
+                                  : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-xs'
+                              }`}
+                            >
+                              <ScanBarcode className="w-3.5 h-3.5" />
+                              <span>{isItemComplete ? '+1 İlave Oku' : '⚡ Barkod Oku / Doğrula'}</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Dispatch Finalization Action Banner */}
+                {isAllScanned ? (
+                  <div className="bg-gradient-to-r from-emerald-600 to-teal-700 text-white rounded-2xl p-6 shadow-xl flex flex-col md:flex-row items-center justify-between gap-4 animate-fade-in">
+                    <div className="flex items-center gap-3">
+                      <div className="p-3 bg-white/20 rounded-2xl">
+                        <CheckCircle className="w-8 h-8 text-white" />
+                      </div>
+                      <div>
+                        <h4 className="text-base font-black">
+                          🎉 Tebrikler! Tüm Kalemler Depodan Barkod Okutularak Doğrulandı
+                        </h4>
+                        <p className="text-xs text-emerald-100">
+                          {currentOrder.orderNumber} nolu sipariş için tüm ürünler hazırlandı. Çıkışı onaylayarak sipariş durumunu 'Teslim Edildi' yapabilirsiniz.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDispatchSlipOrder(currentOrder);
+                          setIsDispatchSlipOpen(true);
+                        }}
+                        className="px-4 py-2.5 bg-white text-emerald-900 font-extrabold text-xs rounded-xl shadow-md hover:bg-emerald-50 transition-all cursor-pointer flex items-center gap-1.5"
+                      >
+                        <Printer className="w-4 h-4" />
+                        <span>Sevk İrsaliyesi Yazdır</span>
+                      </button>
+
+                      {!isOrderDelivered && (
+                        <button
+                          type="button"
+                          onClick={() => handleCompleteOrderDispatch(currentOrder)}
+                          className="px-6 py-2.5 bg-slate-950 hover:bg-slate-900 text-emerald-300 font-black text-xs rounded-xl shadow-lg border border-emerald-400/50 hover:border-emerald-400 transition-all cursor-pointer flex items-center gap-2 active:scale-95"
+                        >
+                          <Truck className="w-4 h-4 text-emerald-400" />
+                          <span>🚀 Depo Çıkışını Tamamla & 'Teslim Edildi' Yap</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                    <div className="flex items-center gap-2 text-amber-900 font-bold">
+                      <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>
+                        Siparişte henüz depodan okutulmamış <strong>{totalItemsCount - completedItemsCount} kalem</strong> bulunmaktadır. Lütfen barkod tabancasıyla okutarak veya tek tıkla doğrula butonunu kullanarak hazırlayın.
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleCompleteOrderDispatch(currentOrder)}
+                      className="whitespace-nowrap px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl cursor-pointer"
+                    >
+                      Eksik Kalemlere Rağmen Çıkış Yap
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Printable Dispatch Slip (Sevk İrsaliyesi / Depo Çıkış Fişi) Modal */}
+      {isDispatchSlipOpen && dispatchSlipOrder && (
+        <div className="fixed inset-0 z-60 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden border border-slate-300 text-slate-900">
+            {/* Modal Top Bar */}
+            <div className="p-3 bg-slate-900 text-white flex items-center justify-between print:hidden">
+              <div className="flex items-center gap-2">
+                <Truck className="w-4 h-4 text-amber-400" />
+                <span className="font-bold text-xs">Resmi Depo Sevk İrsaliyesi & Çıkış Fişi</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer shadow-xs"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>Yazdır / PDF Kaydet</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsDispatchSlipOpen(false)}
+                  className="p-1 text-slate-400 hover:text-white rounded-lg cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Printable Content */}
+            <div className="p-8 space-y-6 text-xs font-sans print:p-0">
+              {/* Slip Header */}
+              <div className="flex justify-between items-start border-b-2 border-slate-900 pb-4">
+                <div>
+                  <h1 className="text-xl font-black tracking-wider text-slate-900 uppercase">PULCARPET HALI SAN. VE TİC. LTD. ŞTİ.</h1>
+                  <p className="text-[11px] text-slate-600">Özel Dokuma & Akrilik Halı Üretim Fabrikası</p>
+                  <p className="text-[10px] text-slate-500">Gaziantep Organize Sanayi Bölgesi • Tel: 0342 000 00 00</p>
+                </div>
+                <div className="text-right">
+                  <span className="inline-block bg-slate-900 text-white font-extrabold text-xs px-3 py-1 rounded font-mono uppercase tracking-wider">
+                    DEPO SEVK İRSALİYESİ
+                  </span>
+                  <div className="font-mono text-xs font-bold text-slate-700 mt-1">
+                    İrsaliye / Sipariş: <strong>{dispatchSlipOrder.orderNumber}</strong>
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    Sevk Tarihi: {new Date().toLocaleDateString('tr-TR')} {new Date().toLocaleTimeString('tr-TR')}
+                  </div>
+                </div>
+              </div>
+
+              {/* Customer & Delivery Information */}
+              <div className="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs">
+                <div>
+                  <span className="font-bold text-slate-500 uppercase text-[10px]">Alıcı Müşteri / Firma</span>
+                  <div className="font-black text-sm text-slate-900">{dispatchSlipOrder.customerName}</div>
+                  <div className="text-slate-700 font-semibold">{dispatchSlipOrder.company || 'Bireysel Müşteri'}</div>
+                  <div className="text-slate-600">İletişim: {dispatchSlipOrder.phone}</div>
+                </div>
+                <div>
+                  <span className="font-bold text-slate-500 uppercase text-[10px]">Teslimat / Sevk Adresi</span>
+                  <div className="font-bold text-slate-900">{dispatchSlipOrder.shippingAddress || 'Adres belirtilmemiş'}</div>
+                  <div className="text-slate-600 mt-1">Söz Verilen Termin: {dispatchSlipOrder.deliveryDate}</div>
+                  <div className="text-emerald-700 font-bold mt-0.5">✓ Depo Barkod Kontrolü Eksiksiz Tamamlandı</div>
+                </div>
+              </div>
+
+              {/* Items Table */}
+              <div className="border border-slate-300 rounded-lg overflow-hidden">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-100 border-b border-slate-300 font-extrabold text-slate-800">
+                      <th className="p-2.5 w-8">#</th>
+                      <th className="p-2.5">Ürün / Koleksiyon Açıklaması</th>
+                      <th className="p-2.5">Renk Kodu</th>
+                      <th className="p-2.5">Ölçü (En x Boy)</th>
+                      <th className="p-2.5 text-center">Miktar</th>
+                      <th className="p-2.5 text-right">Toplam m²</th>
+                      <th className="p-2.5 text-center">Barkod (EAN-13)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(dispatchSlipOrder.items || []).map((it, idx) => {
+                      const barcode = getItemBarcode(it);
+                      return (
+                        <tr key={it.id} className="border-b border-slate-200">
+                          <td className="p-2.5 font-bold font-mono">{idx + 1}</td>
+                          <td className="p-2.5 font-bold text-slate-900">{it.collectionName}</td>
+                          <td className="p-2.5 font-mono">{it.colorCode || '-'}</td>
+                          <td className="p-2.5">
+                            {it.widthCm && it.lengthCm ? `${it.widthCm}x${it.lengthCm} cm` : `${it.areaM2} m²`}
+                          </td>
+                          <td className="p-2.5 text-center font-bold">{it.quantity || 1} Adet</td>
+                          <td className="p-2.5 text-right font-mono font-bold">{it.areaM2.toFixed(2)} m²</td>
+                          <td className="p-2.5 text-center">
+                            <span className="font-mono font-bold text-[10px] bg-slate-100 px-2 py-0.5 rounded border border-slate-300">
+                              {barcode}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-slate-50 font-bold">
+                      <td colSpan={4} className="p-2.5 text-right">GENEL TOPLAM:</td>
+                      <td className="p-2.5 text-center font-mono font-bold">
+                        {(dispatchSlipOrder.items || []).reduce((s, it) => s + (it.quantity || 1), 0)} Adet
+                      </td>
+                      <td className="p-2.5 text-right font-mono font-bold text-indigo-700">
+                        {dispatchSlipOrder.totalM2.toFixed(2)} m²
+                      </td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              {/* Signatures */}
+              <div className="grid grid-cols-3 gap-6 pt-6 border-t border-slate-300 text-center">
+                <div className="space-y-8">
+                  <span className="font-bold text-slate-700 block">Depo Sorumlusu</span>
+                  <div className="text-[10px] text-slate-400">İmza / Kaşe</div>
+                </div>
+                <div className="space-y-8">
+                  <span className="font-bold text-slate-700 block">Taşıyıcı / Kargo</span>
+                  <div className="text-[10px] text-slate-400">İmza</div>
+                </div>
+                <div className="space-y-8">
+                  <span className="font-bold text-slate-700 block">Teslim Alan Müşteri</span>
+                  <div className="text-[10px] text-slate-400">İmza / Tarih</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Bottom Footer */}
+            <div className="p-4 bg-slate-100 border-t border-slate-200 flex justify-end gap-2 print:hidden">
+              <button
+                type="button"
+                onClick={() => setIsDispatchSlipOpen(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl cursor-pointer"
+              >
+                Kapat
+              </button>
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs rounded-xl shadow-md cursor-pointer flex items-center gap-1.5"
+              >
+                <Printer className="w-4 h-4" />
+                <span>Yazdır</span>
+              </button>
             </div>
           </div>
         </div>
