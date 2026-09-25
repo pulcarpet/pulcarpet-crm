@@ -1,0 +1,6 @@
+{
+  "name": "Pulcarpet CRM Portal",
+  "description": "PulCarpet AI Destekli Halı & Zemin Yönetim ve CRM Paneli",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

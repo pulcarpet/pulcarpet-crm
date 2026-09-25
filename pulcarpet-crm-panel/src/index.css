@@ -1,0 +1,149 @@
+@import "tailwindcss";
+
+@media print {
+  @page {
+    size: auto;
+    margin: 4mm 6mm 4mm 6mm !important;
+  }
+
+  /* Force html, body, and app containers to top-aligned static block layout */
+  html, body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    display: block !important;
+    position: static !important;
+    overflow: visible !important;
+  }
+
+  #root, #pulcarpet-app {
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* Hide header, navigation sidebars, and elements explicitly marked print:hidden */
+  #crm-header,
+  #pulcarpet-app > header,
+  #pulcarpet-app > div > aside,
+  nav,
+  .print\:hidden {
+    display: none !important;
+  }
+
+  #pulcarpet-app > div {
+    display: block !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    height: auto !important;
+  }
+
+  /* Barcode Printing Mode: Hide everything except the printable barcode container */
+  body.printing-barcode #pulcarpet-app > header,
+  body.printing-barcode #pulcarpet-app > div > aside,
+  body.printing-barcode #barcode-scanner-view > *:not(#printable-barcode-section),
+  body.printing-barcode .fixed:not(:has(#printable-barcode-section)) {
+    display: none !important;
+  }
+
+  body.printing-barcode #printable-barcode-section {
+    display: block !important;
+    visibility: visible !important;
+    position: static !important;
+    width: 100% !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  body.printing-barcode #printable-barcode-section * {
+    visibility: visible !important;
+  }
+
+  /* When printing a modal with printable-a4-page (Proforma, Production Order, etc.) */
+  body.printing-modal #pulcarpet-app > div > main:not(:has(.printable-a4-page)),
+  body:has(.printable-a4-page) #pulcarpet-app > div > main:not(:has(.printable-a4-page)) {
+    display: none !important;
+  }
+
+  /* Reset modal dialog wrappers when printing */
+  .fixed,
+  .fixed.inset-0 {
+    position: static !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    backdrop-filter: none !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+
+  .fixed > div,
+  .fixed.inset-0 > div {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    flex: none !important;
+  }
+
+  /* Printable A4 container */
+  .printable-a4-page {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    page-break-before: avoid !important;
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+    overflow: hidden !important;
+    display: block !important;
+  }
+
+  #printable-barcode-section {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  #printable-barcode-section * {
+    visibility: visible !important;
+  }
+}
+
+
